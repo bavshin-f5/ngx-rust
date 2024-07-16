@@ -203,7 +203,7 @@ http_request_handler!(async_access_handler, |request: &mut http::Request| {
 
     // create a posted event
     unsafe {
-        let event = &mut *(request.pool().calloc(std::mem::size_of::<ngx_event_t>()) as *mut ngx_event_t);
+        let event = request.pool().alloc_type_zeroed::<ngx_event_t>().as_mut().unwrap();
         event.handler = Some(check_async_work_done);
         event.data = Arc::into_raw(event_data.clone()) as _;
         event.log = (*ngx_cycle).log;
