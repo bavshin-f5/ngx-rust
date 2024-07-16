@@ -49,7 +49,7 @@ impl Pool {
     ///
     /// Returns `Some(MemoryBuffer)` if the buffer is successfully created, or `None` if allocation fails.
     pub fn create_buffer_from_static_str(&mut self, str: &'static str) -> Option<MemoryBuffer> {
-        let buf = self.calloc_type::<ngx_buf_t>();
+        let buf = self.alloc_type_zeroed::<ngx_buf_t>();
         if buf.is_null() {
             return None;
         }
@@ -106,7 +106,7 @@ impl Pool {
     /// The resulting pointer is aligned to a platform word size.
     ///
     /// Returns a raw pointer to the allocated memory.
-    pub fn calloc(&mut self, size: usize) -> *mut c_void {
+    pub fn alloc_zeroed(&mut self, size: usize) -> *mut c_void {
         unsafe { ngx_pcalloc(self.0, size) }
     }
 
@@ -114,8 +114,8 @@ impl Pool {
     /// The resulting pointer is aligned to a platform word size.
     ///
     /// Returns a typed pointer to the allocated memory.
-    pub fn calloc_type<T: Copy>(&mut self) -> *mut T {
-        self.calloc(mem::size_of::<T>()) as *mut T
+    pub fn alloc_type_zeroed<T: Copy>(&mut self) -> *mut T {
+        self.alloc_zeroed(mem::size_of::<T>()) as *mut T
     }
 
     /// Allocates unaligned memory from the pool of the specified size.
