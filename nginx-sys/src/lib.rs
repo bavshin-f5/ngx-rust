@@ -246,18 +246,17 @@ impl TryFrom<ngx_str_t> for &str {
 pub unsafe fn add_to_ngx_table(
     table: *mut ngx_table_elt_t,
     pool: *mut ngx_pool_t,
-    key: &str,
-    value: &str,
+    key: impl AsRef<[u8]>,
+    value: impl AsRef<[u8]>,
 ) -> Option<()> {
-    if table.is_null() {
-        return None;
-    }
-    table.as_mut().map(|table| {
+    if let Some(table) = table.as_mut() {
+        let key = key.as_ref();
         table.hash = 1;
-        table.key.len = key.len() as _;
-        table.key.data = str_to_uchar(pool, key);
-        table.value.len = value.len() as _;
-        table.value.data = str_to_uchar(pool, value);
-        table.lowcase_key = str_to_uchar(pool, String::from(key).to_ascii_lowercase().as_str());
-    })
+        table.key = ngx_str_t::from_bytes(pool, key)?;
+        table.value = ngx_str_t::from_bytes(pool, value.as_ref())?;
+        table.lowcase_key = bytes_to_uchar(pool, &key.to_ascii_lowercase())?;
+
+        return Some(());
+    }
+    None
 }
