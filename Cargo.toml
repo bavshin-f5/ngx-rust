@@ -25,6 +25,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+foreign-types = "0.5.0"
 nginx-sys = { path = "nginx-sys", default-features=false, version = "0.5.0"}
 
 [features]
