@@ -98,3 +98,9 @@ macro_rules! count {
     () => { 0usize };
     ($x:tt, $( $xs:tt ),*) => { 1usize + $crate::count!($( $xs, )*) };
 }
+
+/// Re-export of the foreign-types traits
+///
+/// We need that because it is a part of the public API and other crates (openssl) may require
+/// another version of foreign-types.
+pub use foreign_types::{ForeignType, ForeignTypeRef};
