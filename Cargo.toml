@@ -19,6 +19,7 @@ keywords = ["nginx", "module", "sys"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+foreign-types = "0.5.0"
 nginx-sys = { path = "nginx-sys", version = "0.5.0"}
 
 [features]
