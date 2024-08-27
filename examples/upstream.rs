@@ -7,14 +7,14 @@
  * to the community at large.
  */
 use ngx::{
-    core::{PoolRef, Status},
+    core::{NgxConfRef, Status},
     ffi::{
         nginx_version, ngx_atoi, ngx_command_t, ngx_conf_log_error, ngx_conf_t, ngx_connection_t,
         ngx_event_free_peer_pt, ngx_event_get_peer_pt, ngx_http_module_t, ngx_http_request_t,
         ngx_http_upstream_init_peer_pt, ngx_http_upstream_init_pt, ngx_http_upstream_init_round_robin,
         ngx_http_upstream_module, ngx_http_upstream_srv_conf_t, ngx_http_upstream_t, ngx_int_t, ngx_module_t,
-        ngx_peer_connection_t, ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_CONF_UNSET, NGX_ERROR,
-        NGX_HTTP_MODULE, NGX_HTTP_UPS_CONF, NGX_LOG_EMERG, NGX_RS_HTTP_SRV_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
+        ngx_peer_connection_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_CONF_UNSET, NGX_ERROR, NGX_HTTP_MODULE,
+        NGX_HTTP_UPS_CONF, NGX_LOG_EMERG, NGX_RS_HTTP_SRV_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
     },
     http::{
         ngx_http_conf_get_module_srv_conf, ngx_http_conf_upstream_srv_conf_immutable,
@@ -22,13 +22,12 @@ use ngx::{
     },
     http_upstream_init_peer_pt,
     log::DebugMask,
-    ngx_log_debug_http, ngx_log_debug_mask, ngx_null_command, ngx_string,
+    ngx_log_debug_http, ngx_log_debug_mask, ngx_null_command, ngx_string, ForeignTypeRef,
 };
 use std::{
     mem,
     os::raw::{c_char, c_void},
     ptr::addr_of,
-    slice,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -292,20 +291,22 @@ unsafe extern "C" fn ngx_http_upstream_commands_set_custom(
     cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
-    ngx_log_debug_mask!(DebugMask::Http, (*cf).log, "CUSTOM UPSTREAM module init");
+    // SAFETY: config callback is guaranteed to receive a valid `ngx_conf_t` pointer
+    let cf = NgxConfRef::from_ptr_mut(cf);
+    ngx_log_debug_mask!(DebugMask::Http, cf.log, "CUSTOM UPSTREAM module init");
 
     let ccf = &mut (*(conf as *mut SrvConfig));
 
-    if (*(*cf).args).nelts == 2 {
-        let value: &[ngx_str_t] = slice::from_raw_parts((*(*cf).args).elts as *const ngx_str_t, (*(*cf).args).nelts);
-        let n = ngx_atoi(value[1].data, value[1].len);
+    let args = cf.args();
+    if args.len() == 2 {
+        let n = ngx_atoi(args[1].data, args[1].len);
         if n == (NGX_ERROR as isize) || n == 0 {
             ngx_conf_log_error(
                 NGX_LOG_EMERG as usize,
-                cf,
+                cf.as_ptr(),
                 0,
                 "invalid value \"%V\" in \"%V\" directive".as_bytes().as_ptr() as *const c_char,
-                value[1],
+                &args[1],
                 &(*cmd).name,
             );
             return usize::MAX as *mut c_char;
@@ -314,7 +315,7 @@ unsafe extern "C" fn ngx_http_upstream_commands_set_custom(
     }
 
     let uscf: *mut ngx_http_upstream_srv_conf_t =
-        ngx_http_conf_get_module_srv_conf(cf, &*addr_of!(ngx_http_upstream_module))
+        ngx_http_conf_get_module_srv_conf(cf.as_mut(), &*addr_of!(ngx_http_upstream_module))
             as *mut ngx_http_upstream_srv_conf_t;
 
     ccf.original_init_upstream = if (*uscf).peer.init_upstream.is_some() {
@@ -325,7 +326,7 @@ unsafe extern "C" fn ngx_http_upstream_commands_set_custom(
 
     (*uscf).peer.init_upstream = Some(ngx_http_upstream_init_custom);
 
-    ngx_log_debug_mask!(DebugMask::Http, (*cf).log, "CUSTOM UPSTREAM end module init");
+    ngx_log_debug_mask!(DebugMask::Http, cf.log, "CUSTOM UPSTREAM end module init");
     // NGX_CONF_OK
     std::ptr::null_mut()
 }
@@ -341,13 +342,13 @@ impl HTTPModule for Module {
     type LocConf = ();
 
     unsafe extern "C" fn create_srv_conf(cf: *mut ngx_conf_t) -> *mut c_void {
-        // SAFETY: `ngx_conf_t` is guaranteed to have a valid pool
-        let pool = PoolRef::from_ngx_pool((*cf).pool);
-        let conf = pool.alloc_type::<SrvConfig>();
+        // SAFETY: config callback is guaranteed to receive a valid `ngx_conf_t` pointer
+        let cf = NgxConfRef::from_ptr_mut(cf);
+        let conf = cf.pool().alloc_type::<SrvConfig>();
         if conf.is_null() {
             ngx_conf_log_error(
                 NGX_LOG_EMERG as usize,
-                cf,
+                cf.as_mut(),
                 0,
                 "CUSTOM UPSTREAM could not allocate memory for config"
                     .as_bytes()
@@ -358,7 +359,7 @@ impl HTTPModule for Module {
 
         (*conf).max = NGX_CONF_UNSET as u32;
 
-        ngx_log_debug_mask!(DebugMask::Http, (*cf).log, "CUSTOM UPSTREAM end create_srv_conf");
+        ngx_log_debug_mask!(DebugMask::Http, cf.log, "CUSTOM UPSTREAM end create_srv_conf");
         conf as *mut c_void
     }
 }
