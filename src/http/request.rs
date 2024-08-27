@@ -1,11 +1,13 @@
+use std::error::Error;
+use std::fmt;
+use std::os::raw::c_void;
+use std::str::FromStr;
+
+use foreign_types::ForeignTypeRef;
+
 use crate::core::*;
 use crate::ffi::*;
 use crate::http::status::*;
-use std::fmt;
-use std::os::raw::c_void;
-
-use std::error::Error;
-use std::str::FromStr;
 
 /// Define a static request handler.
 ///
@@ -110,9 +112,9 @@ impl Request {
     }
 
     /// Request pool.
-    pub fn pool(&self) -> Pool {
+    pub fn pool(&mut self) -> &mut PoolRef {
         // SAFETY: This request is allocated from `pool`, thus must be a valid pool.
-        unsafe { Pool::from_ngx_pool(self.0.pool) }
+        unsafe { PoolRef::from_ptr_mut(self.0.pool) }
     }
 
     /// Returns the result as an `Option` if it exists, otherwise `None`.
@@ -331,7 +333,7 @@ impl Request {
 
     /// Send a subrequest
     pub fn subrequest(
-        &self,
+        &mut self,
         uri: &str,
         module: &ngx_module_t,
         post_callback: unsafe extern "C" fn(*mut ngx_http_request_t, *mut c_void, ngx_int_t) -> ngx_int_t,

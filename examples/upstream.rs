@@ -7,7 +7,7 @@
  * to the community at large.
  */
 use ngx::{
-    core::{Pool, Status},
+    core::{PoolRef, Status},
     ffi::{
         nginx_version, ngx_atoi, ngx_command_t, ngx_conf_log_error, ngx_conf_t, ngx_connection_t,
         ngx_event_free_peer_pt, ngx_event_get_peer_pt, ngx_http_module_t, ngx_http_request_t,
@@ -341,7 +341,8 @@ impl HTTPModule for Module {
     type LocConf = ();
 
     unsafe extern "C" fn create_srv_conf(cf: *mut ngx_conf_t) -> *mut c_void {
-        let mut pool = Pool::from_ngx_pool((*cf).pool);
+        // SAFETY: `ngx_conf_t` is guaranteed to have a valid pool
+        let pool = PoolRef::from_ngx_pool((*cf).pool);
         let conf = pool.alloc_type::<SrvConfig>();
         if conf.is_null() {
             ngx_conf_log_error(
