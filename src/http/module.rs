@@ -1,6 +1,8 @@
 use std::ffi::{c_char, c_void};
 use std::ptr;
 
+use foreign_types::ForeignTypeRef;
+
 use crate::core::NGX_CONF_ERROR;
 use crate::core::*;
 use crate::ffi::*;
@@ -75,7 +77,7 @@ pub trait HTTPModule {
     /// Callers should provide valid non-null `ngx_conf_t` arguments. Implementers must
     /// guard against null inputs or risk runtime errors.
     unsafe extern "C" fn create_main_conf(cf: *mut ngx_conf_t) -> *mut c_void {
-        let mut pool = Pool::from_ngx_pool((*cf).pool);
+        let pool = PoolRef::from_ptr_mut((*cf).pool);
         pool.allocate::<Self::MainConf>(Default::default()) as *mut c_void
     }
 
@@ -92,7 +94,7 @@ pub trait HTTPModule {
     /// Callers should provide valid non-null `ngx_conf_t` arguments. Implementers must
     /// guard against null inputs or risk runtime errors.
     unsafe extern "C" fn create_srv_conf(cf: *mut ngx_conf_t) -> *mut c_void {
-        let mut pool = Pool::from_ngx_pool((*cf).pool);
+        let pool = PoolRef::from_ptr_mut((*cf).pool);
         pool.allocate::<Self::SrvConf>(Default::default()) as *mut c_void
     }
 
@@ -114,7 +116,7 @@ pub trait HTTPModule {
     /// Callers should provide valid non-null `ngx_conf_t` arguments. Implementers must
     /// guard against null inputs or risk runtime errors.
     unsafe extern "C" fn create_loc_conf(cf: *mut ngx_conf_t) -> *mut c_void {
-        let mut pool = Pool::from_ngx_pool((*cf).pool);
+        let pool = PoolRef::from_ptr_mut((*cf).pool);
         pool.allocate::<Self::LocConf>(Default::default()) as *mut c_void
     }
 
