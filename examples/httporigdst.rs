@@ -19,7 +19,7 @@ struct NgxHttpOrigDstCtx {
 }
 
 impl NgxHttpOrigDstCtx {
-    pub fn save(&mut self, addr: &str, port: in_port_t, pool: &mut core::Pool) -> core::Status {
+    pub fn save(&mut self, addr: &str, port: in_port_t, pool: &mut core::PoolRef) -> core::Status {
         let addr_data = pool.alloc_unaligned(addr.len());
         if addr_data.is_null() {
             return core::Status::NGX_ERROR;
@@ -208,7 +208,7 @@ http_variable_get!(
                 }
 
                 ngx_log_debug_http!(request, "httporigdst: saving ip - {:?}, port - {}", ip, port,);
-                (*new_ctx).save(&ip, port, &mut request.pool());
+                (*new_ctx).save(&ip, port, request.pool());
                 (*new_ctx).bind_addr(v);
                 request.set_module_ctx(new_ctx as *mut c_void, &*addr_of!(ngx_http_orig_dst_module));
             }
@@ -247,7 +247,7 @@ http_variable_get!(
                 }
 
                 ngx_log_debug_http!(request, "httporigdst: saving ip - {:?}, port - {}", ip, port,);
-                (*new_ctx).save(&ip, port, &mut request.pool());
+                (*new_ctx).save(&ip, port, request.pool());
                 (*new_ctx).bind_port(v);
                 request.set_module_ctx(new_ctx as *mut c_void, &*addr_of!(ngx_http_orig_dst_module));
             }
