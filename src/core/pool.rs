@@ -1,30 +1,62 @@
 use core::ffi::c_void;
 use core::{mem, ptr};
 
-use crate::core::buffer::{Buffer, MemoryBuffer, TemporaryBuffer};
-use crate::ffi::*;
+use foreign_types::{foreign_type, ForeignType, ForeignTypeRef};
 
-/// Wrapper struct for an [`ngx_pool_t`] pointer, providing methods for working with memory pools.
-///
-/// See <https://nginx.org/en/docs/dev/development_guide.html#pool>
-pub struct Pool(*mut ngx_pool_t);
+use crate::core::buffer::{Buffer, MemoryBuffer, TemporaryBuffer};
+use crate::ffi::{
+    ngx_buf_t, ngx_create_pool, ngx_create_temp_buf, ngx_destroy_pool, ngx_log_t, ngx_palloc, ngx_pcalloc, ngx_pnalloc,
+    ngx_pool_cleanup_add, ngx_pool_t,
+};
+
+foreign_type! {
+    /// Wrapper struct for an `ngx_pool_t` pointer, providing methods for working with memory pools.
+    ///
+    /// See <https://nginx.org/en/docs/dev/development_guide.html#pool>
+    pub unsafe type Pool {
+        type CType = ngx_pool_t;
+
+        fn drop = ngx_destroy_pool;
+    }
+}
+
+impl AsRef<ngx_pool_t> for PoolRef {
+    fn as_ref(&self) -> &ngx_pool_t {
+        // SAFETY: PoolRef must contain a valid pointer to the pool
+        unsafe { &*self.as_ptr() }
+    }
+}
+
+impl AsMut<ngx_pool_t> for PoolRef {
+    fn as_mut(&mut self) -> &mut ngx_pool_t {
+        // SAFETY: PoolRef must contain a valid pointer to the pool
+        unsafe { &mut *self.as_ptr() }
+    }
+}
 
 impl Pool {
-    /// Creates a new `Pool` from an `ngx_pool_t` pointer.
+    /// Creates a pool with the specified size and log.
     ///
     /// # Safety
-    /// The caller must ensure that a valid `ngx_pool_t` pointer is provided, pointing to valid memory and non-null.
-    /// A null argument will cause an assertion failure and panic.
-    pub unsafe fn from_ngx_pool(pool: *mut ngx_pool_t) -> Pool {
-        assert!(!pool.is_null());
-        Pool(pool)
+    /// The caller must pass a valid pointer to the `ngx_log_t`
+    pub unsafe fn create(size: usize, log: *mut ngx_log_t) -> Option<Self> {
+        debug_assert!(!log.is_null());
+        let pool = unsafe { ngx_create_pool(size, log) };
+        if pool.is_null() {
+            None
+        } else {
+            // SAFETY: already checked that the pointer is valid
+            Some(unsafe { Self::from_ptr(pool) })
+        }
     }
+}
 
+impl PoolRef {
     /// Creates a buffer of the specified size in the memory pool.
     ///
     /// Returns `Some(TemporaryBuffer)` if the buffer is successfully created, or `None` if allocation fails.
     pub fn create_buffer(&mut self, size: usize) -> Option<TemporaryBuffer> {
-        let buf = unsafe { ngx_create_temp_buf(self.0, size) };
+        let buf = unsafe { ngx_create_temp_buf(self.as_ptr(), size) };
         if buf.is_null() {
             return None;
         }
@@ -76,7 +108,7 @@ impl Pool {
     /// # Safety
     /// This function is marked as unsafe because it involves raw pointer manipulation.
     unsafe fn add_cleanup_for_value<T>(&mut self, value: *mut T) -> Result<(), ()> {
-        let cln = ngx_pool_cleanup_add(self.0, 0);
+        let cln = ngx_pool_cleanup_add(self.as_ptr(), 0);
         if cln.is_null() {
             return Err(());
         }
@@ -91,7 +123,7 @@ impl Pool {
     ///
     /// Returns a raw pointer to the allocated memory.
     pub fn alloc(&mut self, size: usize) -> *mut c_void {
-        unsafe { ngx_palloc(self.0, size) }
+        unsafe { ngx_palloc(self.as_ptr(), size) }
     }
 
     /// Allocates memory for a type from the pool.
@@ -107,7 +139,7 @@ impl Pool {
     ///
     /// Returns a raw pointer to the allocated memory.
     pub fn calloc(&mut self, size: usize) -> *mut c_void {
-        unsafe { ngx_pcalloc(self.0, size) }
+        unsafe { ngx_pcalloc(self.as_ptr(), size) }
     }
 
     /// Allocates zeroed memory for a type from the pool.
@@ -122,7 +154,7 @@ impl Pool {
     ///
     /// Returns a raw pointer to the allocated memory.
     pub fn alloc_unaligned(&mut self, size: usize) -> *mut c_void {
-        unsafe { ngx_pnalloc(self.0, size) }
+        unsafe { ngx_pnalloc(self.as_ptr(), size) }
     }
 
     /// Allocates unaligned memory for a type from the pool.
