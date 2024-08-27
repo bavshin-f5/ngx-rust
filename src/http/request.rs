@@ -234,18 +234,16 @@ impl Request {
     /// Get the value of a [complex value].
     ///
     /// [complex value]: https://nginx.org/en/docs/dev/development_guide.html#http_complex_values
-    pub fn get_complex_value(&self, cv: &ngx_http_complex_value_t) -> Option<&NgxStr> {
+    pub fn get_complex_value(&self, cv: &ngx_http_complex_value_t) -> Option<NgxStr> {
         let r = (self as *const Request as *mut Request).cast();
         let val = cv as *const ngx_http_complex_value_t as *mut ngx_http_complex_value_t;
+        let mut value = NgxStr::default();
         // SAFETY: `ngx_http_complex_value` does not mutate `r` or `val` and guarentees that
         // a valid Nginx string is stored in `value` if it successfully returns.
-        unsafe {
-            let mut value = ngx_str_t::default();
-            if ngx_http_complex_value(r, val, &mut value) != NGX_OK as ngx_int_t {
-                return None;
-            }
-            Some(NgxStr::from_ngx_str(value))
+        if unsafe { ngx_http_complex_value(r, val, value.as_mut()) } != NGX_OK as ngx_int_t {
+            return None;
         }
+        Some(value)
     }
 
     /// Discard (read and ignore) the [request body].
@@ -258,9 +256,9 @@ impl Request {
     /// Client HTTP [User-Agent].
     ///
     /// [User-Agent]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/User-Agent
-    pub fn user_agent(&self) -> Option<&NgxStr> {
-        if !self.0.headers_in.user_agent.is_null() {
-            unsafe { Some(NgxStr::from_ngx_str((*self.0.headers_in.user_agent).value)) }
+    pub fn user_agent(&self) -> Option<&NgxStrRef> {
+        if let Some(h) = unsafe { self.0.headers_in.user_agent.as_ref() } {
+            unsafe { Some(NgxStrRef::from_ngx_str(&h.value)) }
         } else {
             None
         }
@@ -314,13 +312,13 @@ impl Request {
     }
 
     /// path part of request only
-    pub fn path(&self) -> &NgxStr {
-        unsafe { NgxStr::from_ngx_str(self.0.uri) }
+    pub fn path(&self) -> &NgxStrRef {
+        unsafe { NgxStrRef::from_ngx_str(&self.0.uri) }
     }
 
     /// full uri - containing path and args
-    pub fn unparsed_uri(&self) -> &NgxStr {
-        unsafe { NgxStr::from_ngx_str(self.0.unparsed_uri) }
+    pub fn unparsed_uri(&self) -> &NgxStrRef {
+        unsafe { NgxStrRef::from_ngx_str(&self.0.unparsed_uri) }
     }
 
     /// Send the [response body].
