@@ -80,16 +80,8 @@ macro_rules! http_variable_get {
 #[repr(transparent)]
 pub struct Request(ngx_http_request_t);
 
-impl<'a> From<&'a Request> for *const ngx_http_request_t {
-    fn from(request: &'a Request) -> Self {
-        &request.0 as *const _
-    }
-}
-
-impl<'a> From<&'a mut Request> for *mut ngx_http_request_t {
-    fn from(request: &'a mut Request) -> Self {
-        &request.0 as *const _ as *mut _
-    }
+unsafe impl ForeignTypeRef for Request {
+    type CType = ngx_http_request_t;
 }
 
 impl Request {
@@ -251,8 +243,10 @@ impl Request {
     ///
     /// See https://nginx.org/en/docs/dev/development_guide.html#http_request
     pub fn add_header_in(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Option<()> {
-        let table: *mut ngx_table_elt_t = unsafe { ngx_list_push(&mut self.0.headers_in.headers) as _ };
-        unsafe { add_to_ngx_table(table, self.0.pool, key, value) }
+        let headers: &mut NgxListRef<NgxTableElement> =
+            unsafe { NgxListRef::from_ptr_mut(&self.0.headers_in.headers as *const _ as *mut _) };
+        let pool = unsafe { self.0.pool.as_mut()? };
+        headers.push()?.set(pool, key.as_ref(), value.as_ref())
     }
 
     /// Add header to the `headers_out` object.
@@ -381,13 +375,13 @@ impl Request {
 
     /// Iterate over headers_in
     /// each header item is (String, String) (copied)
-    pub fn headers_in_iterator(&self) -> NgxListIterator {
-        unsafe { list_iterator(&self.0.headers_in.headers) }
+    pub fn headers_in_iterator(&self) -> NgxHeaderIter {
+        unsafe { list_iterator(&self.0.headers_out.headers) }
     }
 
     /// Iterate over headers_out
     /// each header item is (String, String) (copied)
-    pub fn headers_out_iterator(&self) -> NgxListIterator {
+    pub fn headers_out_iterator(&self) -> NgxHeaderIter {
         unsafe { list_iterator(&self.0.headers_out.headers) }
     }
 
@@ -410,61 +404,36 @@ impl fmt::Debug for Request {
 /// Iterator for `ngx_list_t` types.
 ///
 /// Implementes the std::iter::Iterator trait.
-pub struct NgxListIterator {
-    done: bool,
-    part: *const ngx_list_part_t,
-    h: *const ngx_table_elt_t,
-    i: ngx_uint_t,
-}
+pub struct NgxHeaderIter<'a>(NgxListIter<'a, NgxTableElement>);
 
 // create new http request iterator
 /// # Safety
 ///
-/// The caller has provided a valid `ngx_str_t` which can be dereferenced validly.
-pub unsafe fn list_iterator(list: *const ngx_list_t) -> NgxListIterator {
-    let part: *const ngx_list_part_t = &(*list).part;
-
-    NgxListIterator {
-        done: false,
-        part,
-        h: (*part).elts as *const ngx_table_elt_t,
-        i: 0,
-    }
+/// The caller has provided a valid `ngx_list_t` which can be dereferenced validly.
+pub unsafe fn list_iterator(list: &ngx_list_t) -> NgxHeaderIter<'_> {
+    let list = NgxListRef::from_ptr(list as *const _ as *mut _);
+    NgxHeaderIter(list.into_iter())
 }
 
 // iterator for ngx_list_t
-impl Iterator for NgxListIterator {
+impl<'a> Iterator for NgxHeaderIter<'a> {
     // type Item = (&str,&str);
     // TODO: try to use str instead of string
     // something like pub struct Header(ngx_table_elt_t);
     // then header would have key and value
 
-    type Item = (String, String);
+    type Item = (NgxStr, NgxStr);
 
     fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            if self.done {
-                None
-            } else {
-                if self.i >= (*self.part).nelts {
-                    if (*self.part).next.is_null() {
-                        self.done = true;
-                        return None;
-                    }
-
-                    // loop back
-                    self.part = (*self.part).next;
-                    self.h = (*self.part).elts as *mut ngx_table_elt_t;
-                    self.i = 0;
-                }
-
-                let header: *const ngx_table_elt_t = self.h.add(self.i);
-                let header_name: ngx_str_t = (*header).key;
-                let header_value: ngx_str_t = (*header).value;
-                self.i += 1;
-                Some((header_name.to_string(), header_value.to_string()))
+        while let Some(elt) = self.0.next() {
+            let elt: &ngx_table_elt_t = elt.as_ref();
+            if elt.hash == 0 || elt.key.is_empty() {
+                continue;
             }
+
+            return Some((NgxStr::from_ngx_str(elt.key), NgxStr::from_ngx_str(elt.value)));
         }
+        None
     }
 }
 
