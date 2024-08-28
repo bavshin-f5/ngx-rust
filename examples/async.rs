@@ -160,7 +160,7 @@ http_request_handler!(async_access_handler, |request: &mut http::Request| {
     main.set_count(main.count() + 1);
 
     // Request is no longer needed and can be converted to something movable to the async block
-    let req = AtomicPtr::new(request.into());
+    let req = AtomicPtr::new(request.as_ptr());
     let done_flag = ctx.done.clone();
 
     let rt = ngx_http_async_runtime();
