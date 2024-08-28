@@ -134,7 +134,7 @@ http_upstream_init_peer_pt!(
 
         let hccf = maybe_conf.unwrap();
         let original_init_peer = unsafe { (*hccf).original_init_peer.unwrap() };
-        if unsafe { original_init_peer(request.into(), us) != Status::NGX_OK.into() } {
+        if unsafe { original_init_peer(request.as_ptr(), us) != Status::NGX_OK.into() } {
             return Status::NGX_ERROR;
         }
 
