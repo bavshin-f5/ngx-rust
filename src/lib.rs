@@ -43,6 +43,10 @@ extern crate std;
 pub mod allocator;
 pub mod collections;
 
+/// The async runtime implementation around the NGINX event loop
+#[cfg(feature = "async")]
+pub mod r#async;
+
 /// The core module.
 ///
 /// This module provides fundamental utilities needed to interface with many NGINX primitives.

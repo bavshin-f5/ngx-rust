@@ -14,7 +14,7 @@ build = "../build.rs"
 
 [dependencies]
 nginx-sys = { path = "../nginx-sys/", default-features = false }
-ngx = { path = "../", default-features = false, features = ["std"] }
+ngx = { path = "../", default-features = false, features = ["async", "std"] }
 
 [dev-dependencies]
 aws-sign-v4 = "0.3.0"
@@ -24,6 +24,7 @@ http = "1.1.0"
 idna_adapter = "=1.1.0"
 libc = "0.2.140"
 tokio = { version = "1.33.0", features = ["full"] }
+hyper = { version = "1.5.0", features = ["http1", "client"] }
 
 [[example]]
 name = "curl"
@@ -54,6 +55,11 @@ crate-type = ["cdylib"]
 [[example]]
 name = "shared_dict"
 path = "shared_dict.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "async_ngx"
+path = "async_ngx.rs"
 crate-type = ["cdylib"]
 
 [features]
