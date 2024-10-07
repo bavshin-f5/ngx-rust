@@ -40,6 +40,9 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+/// The async runtime implementation around the NGINX event loop
+#[cfg(feature = "async")]
+pub mod r#async;
 /// The core module.
 ///
 /// This module provides fundamental utilities needed to interface with many NGINX primitives.
