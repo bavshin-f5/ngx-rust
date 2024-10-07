@@ -24,6 +24,14 @@ if [ $HTTP = YES ]; then
     fi
 
     if :; then
+        ngx_module_name=ngx_http_async_ngx_module
+        ngx_module_libs="-lm"
+        ngx_rust_target_name=async_ngx
+
+        ngx_rust_module
+    fi
+
+    if :; then
         ngx_module_name=ngx_http_awssigv4_module
         ngx_module_libs="-lm"
         ngx_rust_target_name=awssig
