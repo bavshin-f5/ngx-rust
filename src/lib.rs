@@ -33,6 +33,8 @@
 //! ```
 
 #![warn(missing_docs)]
+/// The async runtime implementation around the NGINX event loop
+pub mod r#async;
 /// The core module.
 ///
 /// This module provides fundamental utilities needed to interface with many NGINX primitives.

@@ -2,7 +2,7 @@ ngx_addon_name=ngx_rust_examples
 ngx_cargo_profile=ngx-module
 ngx_cargo_manifest=$(realpath $ngx_addon_dir/Cargo.toml)
 ngx_cargo_features=
-ngx_rust_examples="async awssig curl upstream"
+ngx_rust_examples="async async_ngx awssig curl upstream"
 
 case "$NGX_PLATFORM" in
     Linux:*)
