@@ -151,13 +151,11 @@ impl Request {
     ///
     /// # Safety
     /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub fn get_module_main_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
+    pub unsafe fn get_module_main_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
         // SAFETY: main conf is either NULL or allocated with ngx_p(c)alloc and
         // explicitly initialized by the module
-        unsafe {
-            let scf = *self.0.main_conf.add(module.ctx_index);
-            scf.cast::<T>().as_ref()
-        }
+        let scf = *self.0.main_conf.add(module.ctx_index);
+        scf.cast::<T>().as_ref()
     }
 
     /// Server-specific configuration for a module.
@@ -166,13 +164,11 @@ impl Request {
     ///
     /// # Safety
     /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub fn get_module_srv_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
+    pub unsafe fn get_module_srv_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
         // SAFETY: server conf is either NULL or allocated with ngx_p(c)alloc and
         // explicitly initialized by the module
-        unsafe {
-            let scf = *self.0.srv_conf.add(module.ctx_index);
-            scf.cast::<T>().as_ref()
-        }
+        let scf = *self.0.srv_conf.add(module.ctx_index);
+        scf.cast::<T>().as_ref()
     }
 
     /// Location-specific configuration for a module.
@@ -181,26 +177,26 @@ impl Request {
     ///
     /// # Safety
     /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub fn get_module_loc_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
+    pub unsafe fn get_module_loc_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
         // SAFETY: location conf is either NULL or allocated with ngx_p(c)alloc and
         // explicitly initialized by the module
-        unsafe {
-            let lcf = *self.0.loc_conf.add(module.ctx_index);
-            lcf.cast::<T>().as_ref()
-        }
+        let lcf = *self.0.loc_conf.add(module.ctx_index);
+        lcf.cast::<T>().as_ref()
     }
 
     /// Get Module context pointer
-    fn get_module_ctx_ptr(&self, module: &ngx_module_t) -> *mut c_void {
-        unsafe { *self.0.ctx.add(module.ctx_index) }
+    unsafe fn get_module_ctx_ptr(&self, module: &ngx_module_t) -> *mut c_void {
+        *self.0.ctx.add(module.ctx_index)
     }
 
     /// Get Module context
-    pub fn get_module_ctx<T>(&self, module: &ngx_module_t) -> Option<&T> {
-        let ctx = self.get_module_ctx_ptr(module).cast::<T>();
+    ///
+    /// # Safety
+    /// Caller must ensure that type `T` matches the context type for the specified module.
+    pub unsafe fn get_module_ctx<T>(&self, module: &ngx_module_t) -> Option<&T> {
         // SAFETY: ctx is either NULL or allocated with ngx_p(c)alloc and
         // explicitly initialized by the module
-        unsafe { ctx.as_ref() }
+        self.get_module_ctx_ptr(module).cast::<T>().as_ref()
     }
 
     /// Sets the value as the module's context.
