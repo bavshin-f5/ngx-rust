@@ -1,14 +1,13 @@
 use std::ffi::{c_char, c_void};
-use std::ptr::addr_of;
 
 use ngx::core;
 use ngx::ffi::{
-    ngx_array_push, ngx_command_t, ngx_conf_t, ngx_http_core_module, ngx_http_handler_pt, ngx_http_module_t,
+    ngx_array_push, ngx_command_t, ngx_conf_t, ngx_http_handler_pt, ngx_http_module_t,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
     NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MODULE,
 };
-use ngx::http::{self, HTTPModule, MergeConfigError};
-use ngx::{http_request_handler, ngx_log_debug_http, ngx_string};
+use ngx::http::{self, HTTPModule, MergeConfigError, NgxHttpConfExt};
+use ngx::{http_request_handler, ngx_http_module_conf, ngx_log_debug_http, ngx_string};
 
 struct Module;
 
@@ -18,9 +17,11 @@ impl http::HTTPModule for Module {
     type LocConf = ModuleConfig;
 
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
-        let cmcf = http::ngx_http_conf_get_module_main_conf(cf, &*addr_of!(ngx_http_core_module));
+        let cmcf = (*cf)
+            .get_http_module_conf_mut::<ngx::ffi::ngx_http_core_main_conf_t>()
+            .expect("http core main conf");
 
-        let h = ngx_array_push(&mut (*cmcf).phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers)
+        let h = ngx_array_push(&mut cmcf.phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers)
             as *mut ngx_http_handler_pt;
         if h.is_null() {
             return core::Status::NGX_ERROR.into();
@@ -35,6 +36,8 @@ impl http::HTTPModule for Module {
 struct ModuleConfig {
     enable: bool,
 }
+
+ngx_http_module_conf!(Location, ngx_http_curl_module, ModuleConfig);
 
 static mut NGX_HTTP_CURL_COMMANDS: [ngx_command_t; 2] = [
     ngx_command_t {
@@ -84,8 +87,9 @@ impl http::Merge for ModuleConfig {
 }
 
 http_request_handler!(curl_access_handler, |request: &mut http::Request| {
-    let co = unsafe { request.get_module_loc_conf::<ModuleConfig>(&*addr_of!(ngx_http_curl_module)) };
-    let co = co.expect("module config is none");
+    let co = request
+        .get_http_module_conf::<ModuleConfig>()
+        .expect("module config is none");
 
     ngx_log_debug_http!(request, "curl module enabled: {}", co.enable);
 
