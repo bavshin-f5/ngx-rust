@@ -1,12 +1,12 @@
+use std::error::Error;
+use std::fmt;
+use std::os::raw::c_void;
+use std::str::FromStr;
+
 use crate::core::*;
 use crate::ffi::*;
 use crate::http::status::*;
 use crate::ngx_null_string;
-use std::fmt;
-use std::os::raw::c_void;
-
-use std::error::Error;
-use std::str::FromStr;
 
 /// Define a static request handler.
 ///
@@ -143,45 +143,6 @@ impl Request {
     /// [`ngx_log_t`]: https://nginx.org/en/docs/dev/development_guide.html#logging
     pub fn log(&self) -> *mut ngx_log_t {
         unsafe { (*self.connection()).log }
-    }
-
-    /// Global configuration for a module.
-    ///
-    /// Applies to the entire `http` block.
-    ///
-    /// # Safety
-    /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub unsafe fn get_module_main_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
-        // SAFETY: main conf is either NULL or allocated with ngx_p(c)alloc and
-        // explicitly initialized by the module
-        let scf = *self.0.main_conf.add(module.ctx_index);
-        scf.cast::<T>().as_ref()
-    }
-
-    /// Server-specific configuration for a module.
-    ///
-    /// Applies to a single `server` block.
-    ///
-    /// # Safety
-    /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub unsafe fn get_module_srv_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
-        // SAFETY: server conf is either NULL or allocated with ngx_p(c)alloc and
-        // explicitly initialized by the module
-        let scf = *self.0.srv_conf.add(module.ctx_index);
-        scf.cast::<T>().as_ref()
-    }
-
-    /// Location-specific configuration for a module.
-    ///
-    /// Applies to a signle `location`, `if` or `limit_except` block.
-    ///
-    /// # Safety
-    /// Caller must ensure that type `T` matches the configuration type for the specified module.
-    pub unsafe fn get_module_loc_conf<T>(&self, module: &ngx_module_t) -> Option<&'static T> {
-        // SAFETY: location conf is either NULL or allocated with ngx_p(c)alloc and
-        // explicitly initialized by the module
-        let lcf = *self.0.loc_conf.add(module.ctx_index);
-        lcf.cast::<T>().as_ref()
     }
 
     /// Get Module context pointer
@@ -395,6 +356,40 @@ impl Request {
     /// Returns the inner data structure that the Request object is wrapping.
     pub fn get_inner(&self) -> &ngx_http_request_t {
         &self.0
+    }
+}
+
+impl crate::http::NgxHttpConfExt for Request {
+    unsafe fn get_http_module_conf_unchecked<T>(
+        &self,
+        context: super::HttpModuleConfType,
+        module: &ngx_module_t,
+    ) -> Option<&'static T> {
+        let conf = match context {
+            super::HttpModuleConfType::Main => self.0.main_conf,
+            super::HttpModuleConfType::Server => self.0.srv_conf,
+            super::HttpModuleConfType::Location => self.0.loc_conf,
+        };
+
+        // SAFETY: conf[module.ctx_index] is either NULL or allocated with ngx_p(c)alloc and
+        // explicitly initialized by the module
+        unsafe { (*conf.add(module.ctx_index)).cast::<T>().as_ref() }
+    }
+
+    unsafe fn get_http_module_conf_mut_unchecked<T>(
+        &self,
+        context: super::HttpModuleConfType,
+        module: &ngx_module_t,
+    ) -> Option<&'static mut T> {
+        let conf = match context {
+            super::HttpModuleConfType::Main => self.0.main_conf,
+            super::HttpModuleConfType::Server => self.0.srv_conf,
+            super::HttpModuleConfType::Location => self.0.loc_conf,
+        };
+
+        // SAFETY: conf[module.ctx_index] is either NULL or allocated with ngx_p(c)alloc and
+        // explicitly initialized by the module
+        unsafe { (*conf.add(module.ctx_index)).cast::<T>().as_mut() }
     }
 }
 
