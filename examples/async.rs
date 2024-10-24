@@ -1,18 +1,18 @@
 use std::ffi::{c_char, c_void};
-use std::ptr::{addr_of, addr_of_mut};
+use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
 use ngx::core;
 use ngx::ffi::{
-    nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle, ngx_event_t, ngx_http_core_module,
-    ngx_http_core_run_phases, ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
-    ngx_http_request_t, ngx_int_t, ngx_module_t, ngx_posted_events, ngx_queue_s, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
-    NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
+    nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle, ngx_event_t, ngx_http_core_run_phases,
+    ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_http_request_t, ngx_int_t,
+    ngx_module_t, ngx_posted_events, ngx_queue_s, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF,
+    NGX_HTTP_MODULE, NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
-use ngx::http::{self, HTTPModule, MergeConfigError};
-use ngx::{http_request_handler, ngx_log_debug_http, ngx_null_command, ngx_string};
+use ngx::http::{self, HTTPModule, MergeConfigError, NgxHttpConfExt};
+use ngx::{http_request_handler, ngx_http_module_conf, ngx_log_debug_http, ngx_null_command, ngx_string};
 use tokio::runtime::Runtime;
 
 struct Module;
@@ -23,9 +23,11 @@ impl http::HTTPModule for Module {
     type LocConf = ModuleConfig;
 
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
-        let cmcf = http::ngx_http_conf_get_module_main_conf(cf, &*addr_of!(ngx_http_core_module));
+        let cmcf = (*cf)
+            .get_http_module_conf_mut::<ngx::ffi::ngx_http_core_main_conf_t>()
+            .expect("http core main conf");
 
-        let h = ngx_array_push(&mut (*cmcf).phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers)
+        let h = ngx_array_push(&mut cmcf.phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers)
             as *mut ngx_http_handler_pt;
         if h.is_null() {
             return core::Status::NGX_ERROR.into();
@@ -41,6 +43,8 @@ struct ModuleConfig {
     enable: bool,
     rt: Runtime,
 }
+
+ngx_http_module_conf!(Location, ngx_http_async_module, ModuleConfig);
 
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -168,8 +172,7 @@ unsafe fn post_event(event: *mut ngx_event_t, queue: *mut ngx_queue_s) {
 }
 
 http_request_handler!(async_access_handler, |request: &mut http::Request| {
-    let co = unsafe { request.get_module_loc_conf::<ModuleConfig>(&*addr_of!(ngx_http_async_module)) };
-    let co = co.expect("module config is none");
+    let co = request.get_http_module_conf::<ModuleConfig>().expect("module config");
     if !co.enable {
         return core::Status::NGX_DECLINED;
     }
