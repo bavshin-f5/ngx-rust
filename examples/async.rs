@@ -9,11 +9,11 @@ use ngx::core;
 use ngx::ffi::{
     ngx_array_push, ngx_command_t, ngx_conf_t, ngx_connection_t, ngx_event_t, ngx_http_core_module,
     ngx_http_core_run_phases, ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
-    ngx_http_request_t, ngx_int_t, ngx_module_t, ngx_post_event, ngx_posted_next_events, ngx_str_t, ngx_uint_t,
-    NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MODULE,
+    ngx_http_request_t, ngx_int_t, ngx_module_t, ngx_posted_next_events, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
+    NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MODULE,
 };
 use ngx::http::{self, HTTPModule, MergeConfigError};
-use ngx::{http_request_handler, ngx_log_debug_http, ngx_string};
+use ngx::{http_request_handler, ngx_log_debug_http, ngx_string, ForeignTypeRef};
 use tokio::runtime::Runtime;
 
 struct Module;
@@ -102,24 +102,16 @@ unsafe extern "C" fn check_async_work_done(event: *mut ngx_event_t) {
         // this doesn't have have good performance but works as a simple thread-safe example and doesn't causes
         // segfault. The best method that provides both thread-safety and performance requires
         // an nginx patch.
-        ngx_post_event(event, addr_of_mut!(ngx_posted_next_events));
+        let event = ngx::core::EventRef::from_ptr_mut(event);
+        event.post_event(addr_of_mut!(ngx_posted_next_events));
     }
 }
 
+#[derive(Default)]
 struct RequestCTX {
     done: Arc<AtomicBool>,
-    event: ngx_event_t,
+    event: ngx::core::Event,
     task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl Default for RequestCTX {
-    fn default() -> Self {
-        Self {
-            done: AtomicBool::new(false).into(),
-            event: unsafe { std::mem::zeroed() },
-            task: Default::default(),
-        }
-    }
 }
 
 impl Drop for RequestCTX {
@@ -129,7 +121,7 @@ impl Drop for RequestCTX {
         }
 
         if self.event.posted() != 0 {
-            unsafe { ngx::ffi::ngx_delete_posted_event(&mut self.event) };
+            self.event.delete_posted_event();
         }
     }
 }
@@ -162,7 +154,7 @@ http_request_handler!(async_access_handler, |request: &mut http::Request| {
     ctx.event.handler = Some(check_async_work_done);
     ctx.event.data = request.connection().cast();
     ctx.event.log = unsafe { (*request.connection()).log };
-    unsafe { ngx_post_event(&mut ctx.event, addr_of_mut!(ngx_posted_next_events)) };
+    unsafe { ctx.event.post_event(addr_of_mut!(ngx_posted_next_events)) };
 
     let main = unsafe { &mut *request.as_ref().main };
     main.set_count(main.count() + 1);
