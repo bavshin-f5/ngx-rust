@@ -566,7 +566,9 @@ dependencies = [
 name = "ngx"
 version = "0.5.0"
 dependencies = [
+ "errno",
  "foreign-types",
+ "libc",
  "nginx-sys",
  "target-triple",
 ]
