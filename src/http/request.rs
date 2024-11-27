@@ -277,7 +277,7 @@ impl Request {
     ///
     /// [Content-Length]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Length
     pub fn set_content_length_n(&mut self, n: usize) {
-        self.0.headers_out.content_length_n = n as off_t;
+        self.0.headers_out.content_length_n = n as libc::off_t;
     }
 
     /// Send the output header.

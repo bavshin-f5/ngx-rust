@@ -15,6 +15,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+libc = "0.2"
+openssl-sys = "0.9.104"
 
 [build-dependencies]
 bindgen = "0.70.1"

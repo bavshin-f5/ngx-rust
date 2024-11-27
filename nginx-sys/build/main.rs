@@ -6,6 +6,8 @@ use std::fs::{read_to_string, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use bindgen::callbacks::{DeriveTrait, ImplementsTrait};
+
 #[cfg(feature = "vendored")]
 mod vendored;
 
@@ -58,6 +60,10 @@ const NGX_CONF_OS: &[&str] = &[
 /// extract them, execute autoconf `configure` for NGINX, compile NGINX and finally install
 /// NGINX in a subdirectory with the project.
 fn main() -> Result<(), Box<dyn StdError>> {
+    for (name, value) in env::vars() {
+        eprintln!("env: {}={}", name, value);
+    }
+
     let nginx_build_dir = match std::env::var("NGX_OBJS") {
         Ok(v) => PathBuf::from(v).canonicalize()?,
         #[cfg(feature = "vendored")]
@@ -77,6 +83,137 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct ExternalType<'a>(&'a str, &'a [DeriveTrait]);
+
+impl<'a> ExternalType<'a> {
+    pub fn implements(&self, derive_trait: DeriveTrait) -> bool {
+        self.1.contains(&derive_trait)
+    }
+}
+
+#[derive(Debug)]
+struct Crate<'a> {
+    name: &'a str,
+    items: std::collections::BTreeMap<&'a str, ExternalType<'a>>,
+}
+
+impl<'a> Crate<'a> {
+    pub fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            items: Default::default(),
+        }
+    }
+
+    pub fn add_type(&mut self, name: &'a str, traits: &'a [DeriveTrait]) {
+        self.items.entry(name).or_insert_with(|| ExternalType(name, traits));
+    }
+
+    pub fn add_type_copy(&mut self, name: &'a str) {
+        self.add_type(name, &[DeriveTrait::Copy])
+    }
+
+    pub fn add_type_copy_debug(&mut self, name: &'a str) {
+        self.add_type(name, &[DeriveTrait::Copy, DeriveTrait::Debug])
+    }
+
+    pub fn type_names(&self) -> Vec<&str> {
+        self.items.values().map(|x| x.0).collect()
+    }
+
+    pub fn uses(&self) -> String {
+        format!("use {}::{{{}}};", self.name, self.type_names().join(","))
+    }
+}
+
+#[derive(Debug, Default)]
+struct NgxExternalTypes<'a>(Vec<Crate<'a>>);
+
+impl NgxExternalTypes<'_> {
+    pub fn new() -> Self {
+        let mut this = Self::default();
+
+        this.0.push(Crate::new("libc"));
+        let libc = this.0.last_mut().unwrap();
+
+        libc.add_type_copy("glob_t");
+        libc.add_type_copy("in6_addr");
+        libc.add_type_copy("iocb");
+        libc.add_type_copy("sem_t");
+        libc.add_type_copy("sockaddr_in");
+        libc.add_type_copy("sockaddr_in6");
+        libc.add_type_copy("stat");
+        libc.add_type_copy_debug("DIR");
+        libc.add_type_copy_debug("cmsghdr");
+        libc.add_type_copy_debug("cpu_set_t");
+        libc.add_type_copy_debug("dirent");
+        libc.add_type_copy_debug("gid_t");
+        libc.add_type_copy_debug("in6_pktinfo");
+        libc.add_type_copy_debug("in_addr_t");
+        libc.add_type_copy_debug("in_pktinfo");
+        libc.add_type_copy_debug("in_port_t");
+        libc.add_type_copy_debug("ino_t");
+        libc.add_type_copy_debug("iovec");
+        libc.add_type_copy_debug("msghdr");
+        libc.add_type_copy_debug("off_t");
+        libc.add_type_copy_debug("pid_t");
+        libc.add_type_copy_debug("pthread_cond_t");
+        libc.add_type_copy_debug("pthread_mutex_t");
+        libc.add_type_copy_debug("sockaddr");
+        libc.add_type_copy_debug("sockaddr_un");
+        libc.add_type_copy_debug("socklen_t");
+        libc.add_type_copy_debug("time_t");
+        libc.add_type_copy_debug("tm");
+        libc.add_type_copy_debug("uid_t");
+
+        this.0.push(Crate::new("openssl_sys"));
+        let openssl_sys: &'_ mut Crate = this.0.last_mut().unwrap();
+        openssl_sys.add_type("SSL", &[]);
+        openssl_sys.add_type("SSL_CTX", &[]);
+        openssl_sys.add_type("SSL_SESSION", &[]);
+
+        this
+    }
+
+    fn find(&self, name: &str) -> Option<(&Crate, &ExternalType)> {
+        for c in &self.0[..] {
+            for t in c.items.values() {
+                if t.0 == name {
+                    return Some((c, t));
+                }
+            }
+        }
+        None
+    }
+
+    fn blocklist(&self) -> String {
+        self.0.iter().flat_map(Crate::type_names).collect::<Vec<_>>().join("|")
+    }
+
+    fn uses(&self) -> String {
+        self.0.iter().map(Crate::uses).collect::<Vec<_>>().join("\n")
+    }
+}
+
+impl<'a> bindgen::callbacks::ParseCallbacks for NgxExternalTypes<'a> {
+    fn blocklisted_type_implements_trait(&self, name: &str, derive_trait: DeriveTrait) -> Option<ImplementsTrait> {
+        let parts = name.split_ascii_whitespace().collect::<Vec<_>>();
+        let type_name = match &parts[..] {
+            ["const", "struct", n] => n,
+            ["const", n] => n,
+            ["struct", n] => n,
+            [n] => n,
+            _ => panic!("unhandled blocklisted type: {}", name),
+        };
+
+        if self.find(type_name)?.1.implements(derive_trait) {
+            return Some(ImplementsTrait::Yes);
+        }
+        None
+    }
+}
+
 /// Generates Rust bindings for NGINX
 fn generate_binding(nginx_build_dir: PathBuf) {
     let autoconf_makefile_path = nginx_build_dir.join("Makefile");
@@ -88,15 +225,23 @@ fn generate_binding(nginx_build_dir: PathBuf) {
 
     print_cargo_metadata(&includes).expect("cargo dependency metadata");
 
+    let callbacks = NgxExternalTypes::new();
+
     let bindings = bindgen::Builder::default()
-        // Bindings will not compile on Linux without block listing this item
-        // It is worth investigating why this is
-        .blocklist_item("IPPORT_RESERVED")
+        .allowlist_function("ngx_.*")
+        .allowlist_type("ngx_.*")
+        .allowlist_type("bpf_.*")
+        .allowlist_type("sig_atomic_t|u_char|u_short")
+        .allowlist_var("(NGX|NGINX|ngx|nginx)_.*")
+        .blocklist_type(callbacks.blocklist())
+        .raw_line(callbacks.uses())
+        .generate_comments(false)
         .generate_cstr(true)
         // The input header we would like to generate bindings for.
         .header("build/wrapper.h")
         .clang_args(clang_args)
         .layout_tests(false)
+        .parse_callbacks(Box::new(callbacks))
         .generate()
         .expect("Unable to generate bindings");
 
@@ -106,6 +251,10 @@ fn generate_binding(nginx_build_dir: PathBuf) {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    bindings
+        .write_to_file(PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("bindgen.out"))
+        .unwrap();
 }
 
 /// Reads through the makefile generated by autoconf and finds all of the includes
