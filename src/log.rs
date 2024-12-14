@@ -1,3 +1,6 @@
+use std::fmt;
+use std::io::Write;
+
 /// Utility function to provide typed checking of the mask's field state.
 #[inline(always)]
 pub fn check_mask(mask: DebugMask, log_level: usize) -> bool {
@@ -7,6 +10,29 @@ pub fn check_mask(mask: DebugMask, log_level: usize) -> bool {
     }
     true
 }
+
+/// Format args into a provided buffer
+// XXX: use std::io::BorrowedBuf to avoid initialization when stabilized
+// XXX: may produce incomplete UTF-8 sequences. But writes to `ngx_log_t` already can be truncated,
+// so nothing we can do here.
+#[inline]
+pub fn format_into_buf<'a>(args: fmt::Arguments<'_>, out: &'a mut [u8]) -> &'a [u8] {
+    if let Some(str) = args.as_str() {
+        str.as_bytes()
+    } else {
+        let mut cur = std::io::Cursor::new(out);
+        // nothing we can or want to do on errors.
+        let _ = cur.write_fmt(args);
+        let n = cur.position() as usize;
+        &cur.into_inner()[..n]
+    }
+}
+
+/// Size of the static buffer used to format log messages.
+///
+/// Approximates the remaining space in `u_char[NGX_MAX_ERROR_STR]` after writing the standard log
+/// prefix (`1970/01/01 00:00:00 [info] 1#1: `).
+pub const LOG_BUFFER_SIZE: usize = (crate::ffi::NGX_MAX_ERROR_STR - 32) as _;
 
 /// Write to logger at a specified level.
 ///
@@ -18,8 +44,8 @@ macro_rules! ngx_log_error {
         let log = $log;
         let level = $level as $crate::ffi::ngx_uint_t;
         if level < unsafe { (*log).log_level } {
-            let message = ::std::format!($($arg)+);
-            let message = message.as_bytes();
+            let mut out = [0u8; $crate::log::LOG_BUFFER_SIZE];
+            let message = $crate::log::format_into_buf(format_args!($($arg)+), &mut out);
             unsafe {
                 $crate::ffi::ngx_log_error_core(level, log, 0, c"%*s".as_ptr(), message.len(), message.as_ptr());
             }
@@ -34,8 +60,8 @@ macro_rules! ngx_conf_log_error {
         let cf: *mut $crate::ffi::ngx_conf_t = $cf;
         let level = $level as $crate::ffi::ngx_uint_t;
         if level < unsafe { (*(*cf).log).log_level } {
-            let message = ::std::format!($($arg)+);
-            let message = message.as_bytes();
+            let mut out = [0u8; $crate::log::LOG_BUFFER_SIZE];
+            let message = $crate::log::format_into_buf(format_args!($($arg)+), &mut out);
             unsafe {
                 $crate::ffi::ngx_conf_log_error(level, cf, 0, c"%*s".as_ptr(), message.len(), message.as_ptr());
             }
@@ -50,8 +76,8 @@ macro_rules! ngx_log_debug {
         let log = $log;
         if $crate::log::check_mask($mask, unsafe { (*log).log_level }) {
             let level = $crate::ffi::NGX_LOG_DEBUG as $crate::ffi::ngx_uint_t;
-            let message = format!($($arg)+);
-            let message = message.as_bytes();
+            let mut out = [0u8; $crate::log::LOG_BUFFER_SIZE];
+            let message = $crate::log::format_into_buf(format_args!($($arg)+), &mut out);
             unsafe {
                 $crate::ffi::ngx_log_error_core(level, log, 0, c"%*s".as_ptr(), message.len(), message.as_ptr());
             }
