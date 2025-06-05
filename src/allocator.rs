@@ -1,5 +1,5 @@
 use ::core::mem;
-use ::core::ptr::NonNull;
+use ::core::ptr::{self, NonNull};
 
 pub use allocator_api2::alloc::*;
 
@@ -36,6 +36,17 @@ where
     unsafe { ptr.cast::<mem::MaybeUninit<T>>().as_mut().write(value) };
 
     Ok(ptr)
+}
+///
+/// Creates a `NonNull` that is dangling, but well-aligned for this alignment.
+///
+/// See also [::core::alloc::Layout::dangling()]
+#[inline(always)]
+pub(crate) const fn dangling_aligned<T>(align: usize) -> NonNull<T> {
+    unsafe {
+        let ptr = ptr::null_mut::<T>().byte_add(align);
+        NonNull::new_unchecked(ptr)
+    }
 }
 
 #[cfg(feature = "alloc")]
