@@ -37,6 +37,19 @@ where
 
     Ok(ptr)
 }
+///
+/// Creates a `NonNull` that is dangling, but well-aligned for this alignment.
+///
+/// See also [::core::alloc::Layout::dangling()]
+#[inline(always)]
+pub(crate) const fn dangling_aligned<T>(align: usize) -> NonNull<T> {
+    unsafe {
+        // TODO: use ptr::without_provenance with msrv >= 1.84
+        #[allow(clippy::useless_transmute)]
+        let ptr: *mut T = mem::transmute(align);
+        NonNull::new_unchecked(ptr)
+    }
+}
 
 #[cfg(feature = "alloc")]
 mod impls {
