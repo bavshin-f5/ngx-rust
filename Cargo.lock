@@ -568,6 +568,7 @@ name = "ngx"
 version = "0.5.0"
 dependencies = [
  "allocator-api2",
+ "lock_api",
  "nginx-sys",
  "target-triple",
 ]
