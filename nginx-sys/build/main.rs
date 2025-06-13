@@ -25,6 +25,9 @@ const NGX_CONF_FEATURES: &[&str] = &[
     "have_epollrdhup",
     "have_file_aio",
     "have_kqueue",
+    "have_memalign",
+    "have_posix_memalign",
+    "have_sched_yield",
     "have_variadic_macros",
     "http",
     "http_cache",
@@ -216,6 +219,8 @@ fn generate_binding(nginx: &NginxSource) {
         // Bindings will not compile on Linux without block listing this item
         // It is worth investigating why this is
         .blocklist_item("IPPORT_RESERVED")
+        // will be restored later in build.rs
+        .blocklist_item("NGX_ALIGNMENT")
         .generate_cstr(true)
         // The input header we would like to generate bindings for.
         .header("build/wrapper.h")
@@ -339,22 +344,19 @@ pub fn print_cargo_metadata<T: AsRef<Path>>(includes: &[T]) -> Result<(), Box<dy
 
     // A quoted list of all recognized features to be passed to rustc-check-cfg.
     let values = NGX_CONF_FEATURES.join("\",\"");
-    println!("cargo::metadata=features_check=\"{}\"", values);
-    println!(
-        "cargo::rustc-check-cfg=cfg(ngx_feature, values(\"{}\"))",
-        values
-    );
+    println!("cargo::metadata=features_check=\"{values}\"");
+    println!("cargo::rustc-check-cfg=cfg(ngx_feature, values(\"{values}\"))");
 
     // A list of features enabled in the nginx build we're using
     println!("cargo::metadata=features={}", ngx_features.join(","));
     for feature in ngx_features {
-        println!("cargo::rustc-cfg=ngx_feature=\"{}\"", feature);
+        println!("cargo::rustc-cfg=ngx_feature=\"{feature}\"");
     }
 
     // A quoted list of all recognized operating systems to be passed to rustc-check-cfg.
     let values = NGX_CONF_OS.join("\",\"");
-    println!("cargo::metadata=os_check=\"{}\"", values);
-    println!("cargo::rustc-check-cfg=cfg(ngx_os, values(\"{}\"))", values);
+    println!("cargo::metadata=os_check=\"{values}\"");
+    println!("cargo::rustc-check-cfg=cfg(ngx_os, values(\"{values}\"))");
     // Current detected operating system
     println!("cargo::metadata=os={ngx_os}");
     println!("cargo::rustc-cfg=ngx_os=\"{ngx_os}\"");

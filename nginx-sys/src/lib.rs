@@ -7,6 +7,7 @@ mod event;
 #[cfg(ngx_feature = "http")]
 mod http;
 mod queue;
+mod rbtree;
 #[cfg(ngx_feature = "stream")]
 mod stream;
 mod string;
@@ -33,8 +34,17 @@ pub use event::*;
 #[cfg(ngx_feature = "http")]
 pub use http::*;
 pub use queue::*;
+pub use rbtree::*;
 #[cfg(ngx_feature = "stream")]
 pub use stream::*;
+
+/// Default alignment for pool allocations.
+pub const NGX_ALIGNMENT: usize = NGX_RS_ALIGNMENT;
+
+// Check if the allocations made with ngx_palloc are properly aligned.
+// If the check fails, objects allocated from `ngx_pool` can violate Rust pointer alignment
+// requirements.
+const _: () = assert!(core::mem::align_of::<ngx_str_t>() <= NGX_ALIGNMENT);
 
 impl ngx_command_t {
     /// Creates a new empty [`ngx_command_t`] instance.
@@ -152,6 +162,23 @@ pub fn ngx_random() -> core::ffi::c_long {
     #[cfg(not(windows))]
     unsafe {
         random()
+    }
+}
+
+/// Causes the calling thread to relinquish the CPU.
+#[inline]
+pub fn ngx_sched_yield() {
+    #[cfg(windows)]
+    unsafe {
+        SwitchToThread()
+    };
+    #[cfg(all(not(windows), ngx_feature = "have_sched_yield"))]
+    unsafe {
+        sched_yield()
+    };
+    #[cfg(not(any(windows, ngx_feature = "have_sched_yield")))]
+    unsafe {
+        usleep(1)
     }
 }
 

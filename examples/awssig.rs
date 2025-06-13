@@ -230,7 +230,7 @@ extern "C" fn ngx_http_awssigv4_commands_set_s3_bucket(
         conf.s3_bucket = (*args.add(1)).to_string();
         if conf.s3_bucket.len() == 1 {
             println!("Validation failed");
-            return ngx::core::NGX_CONF_ERROR as _;
+            return ngx::core::NGX_CONF_ERROR;
         }
     };
     std::ptr::null_mut()
