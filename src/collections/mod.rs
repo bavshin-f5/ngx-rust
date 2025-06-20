@@ -9,6 +9,8 @@ pub use allocator_api2::{
     vec::{self, Vec},
 };
 
+pub use self::array::Array;
 pub use self::rbtree::RbTreeMap;
 
+pub mod array;
 pub mod rbtree;
