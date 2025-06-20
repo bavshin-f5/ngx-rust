@@ -41,6 +41,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod allocator;
+pub mod collections;
 
 /// The core module.
 ///
