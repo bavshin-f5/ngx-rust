@@ -10,7 +10,9 @@ pub use allocator_api2::{
 };
 
 pub use self::array::Array;
+pub use self::queue::Queue;
 pub use self::rbtree::RbTreeMap;
 
 pub mod array;
+pub mod queue;
 pub mod rbtree;
