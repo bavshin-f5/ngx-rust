@@ -10,6 +10,7 @@
 use alloc::string::{String, ToString};
 use core::ffi::c_void;
 use core::fmt;
+use core::num::NonZero;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::task::{Context, Poll, Waker};
@@ -37,8 +38,6 @@ pub enum Error {
     Resolver(ResolverError, String),
     /// Allocation failed
     AllocationFailed,
-    /// Unexpected error
-    Unexpected(String),
 }
 
 impl fmt::Display for Error {
@@ -47,7 +46,6 @@ impl fmt::Display for Error {
             Error::NoResolver => write!(f, "No resolver configured"),
             Error::Resolver(err, context) => write!(f, "{err}: resolving `{context}`"),
             Error::AllocationFailed => write!(f, "Allocation failed"),
-            Error::Unexpected(err) => write!(f, "Unexpected error: {err}"),
         }
     }
 }
@@ -88,19 +86,17 @@ impl fmt::Display for ResolverError {
 }
 impl core::error::Error for ResolverError {}
 
-/// Convert from the NGX_RESOLVE_ error codes. Fails if code was success.
-impl TryFrom<isize> for ResolverError {
-    type Error = ();
-    fn try_from(code: isize) -> Result<ResolverError, Self::Error> {
-        match code as u32 {
-            0 => Err(()),
-            NGX_RESOLVE_FORMERR => Ok(ResolverError::FormErr),
-            NGX_RESOLVE_SERVFAIL => Ok(ResolverError::ServFail),
-            NGX_RESOLVE_NXDOMAIN => Ok(ResolverError::NXDomain),
-            NGX_RESOLVE_NOTIMP => Ok(ResolverError::NotImp),
-            NGX_RESOLVE_REFUSED => Ok(ResolverError::Refused),
-            NGX_RESOLVE_TIMEDOUT => Ok(ResolverError::TimedOut),
-            _ => Ok(ResolverError::Unknown(code)),
+/// Convert from the NGX_RESOLVE_ error codes.
+impl From<NonZero<isize>> for ResolverError {
+    fn from(code: NonZero<isize>) -> ResolverError {
+        match code.get() as u32 {
+            NGX_RESOLVE_FORMERR => ResolverError::FormErr,
+            NGX_RESOLVE_SERVFAIL => ResolverError::ServFail,
+            NGX_RESOLVE_NXDOMAIN => ResolverError::NXDomain,
+            NGX_RESOLVE_NOTIMP => ResolverError::NotImp,
+            NGX_RESOLVE_REFUSED => ResolverError::Refused,
+            NGX_RESOLVE_TIMEDOUT => ResolverError::TimedOut,
+            _ => ResolverError::Unknown(code.get()),
         }
     }
 }
@@ -197,18 +193,16 @@ impl<'a> Resolution<'a> {
         // will be called later by nginx when it gets a dns response or a
         // timeout.
         let ret = unsafe { ngx_resolve_name(ctx.as_ptr()) };
-        if ret != 0 {
-            return Err(Error::Resolver(
-                ResolverError::try_from(ret).expect("nonzero, checked above"),
-                name.to_string(),
-            ));
+        if let Some(e) = NonZero::new(ret) {
+            return Err(Error::Resolver(ResolverError::from(e), name.to_string()));
         }
 
         Ok(this)
     }
 
     // Nginx will call this handler when name resolution completes. If the
-    // result is cached, this could be
+    // result is in the cache, this could be called from inside ngx_resolve_name.
+    // Otherwise, it will be called later on the event loop.
     unsafe extern "C" fn handler(ctx: *mut ngx_resolver_ctx_t) {
         let mut data = unsafe { NonNull::new_unchecked((*ctx).data as *mut Resolution) };
         let this: &mut Resolution = unsafe { data.as_mut() };
@@ -225,38 +219,36 @@ impl<'a> Resolution<'a> {
     }
 
     /// Take the results in a ctx and make an owned copy as a
-    /// Result<Vec<ngx_addr_t>, Error>, where both the Vec and internals of
-    /// the ngx_addr_t are allocated on the given Pool
+    /// Result<Vec<ngx_addr_t>, Error>, where the internals of the ngx_addr_t
+    /// are allocated on the given Pool
     fn resolve_result(ctx: *mut ngx_resolver_ctx_t, pool: &Pool) -> Res {
         let ctx = unsafe { ctx.as_ref().unwrap() };
-        let s = ctx.state;
-        if s != 0 {
+        if let Some(e) = NonZero::new(ctx.state) {
             return Err(Error::Resolver(
-                ResolverError::try_from(s).expect("nonzero, checked above"),
+                ResolverError::from(e),
                 ctx.name.to_string(),
             ));
         }
         if ctx.addrs.is_null() {
             Err(Error::AllocationFailed)?;
         }
-        let mut out = Vec::new();
-        for i in 0..ctx.naddrs {
-            out.push(Self::copy_resolved_addr(unsafe { ctx.addrs.add(i) }, pool)?);
+
+        if ctx.naddrs > 0 {
+            unsafe { core::slice::from_raw_parts(ctx.addrs, ctx.naddrs) }
+                .iter()
+                .map(|addr| Self::copy_resolved_addr(addr, pool))
+                .collect::<Result<Vec<_>, _>>()
+        } else {
+            Ok(Vec::new())
         }
-        Ok(out)
     }
 
     /// Take the contents of an ngx_resolver_addr_t and make an owned copy as
     /// an ngx_addr_t, using the Pool for allocation of the internals.
     fn copy_resolved_addr(
-        addr: *mut nginx_sys::ngx_resolver_addr_t,
+        addr: &nginx_sys::ngx_resolver_addr_t,
         pool: &Pool,
     ) -> Result<ngx_addr_t, Error> {
-        let addr = NonNull::new(addr).ok_or(Error::Unexpected(
-            "null ngx_resolver_addr_t in ngx_resolver_ctx_t.addrs".to_string(),
-        ))?;
-        let addr = unsafe { addr.as_ref() };
-
         let sockaddr = pool.alloc(addr.socklen as usize) as *mut nginx_sys::sockaddr;
         if sockaddr.is_null() {
             Err(Error::AllocationFailed)?;
