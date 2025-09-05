@@ -259,10 +259,8 @@ impl<'a> Resolution<'a> {
                 .copy_to_nonoverlapping(sockaddr.cast(), addr.socklen as usize)
         };
 
-        let name = unsafe {
-            ngx_str_t::from_bytes(pool.as_ref() as *const _ as *mut _, addr.name.as_bytes())
-        }
-        .ok_or(Error::AllocationFailed)?;
+        let name = unsafe { ngx_str_t::from_bytes(pool.as_ptr(), addr.name.as_bytes()) }
+            .ok_or(Error::AllocationFailed)?;
 
         Ok(ngx_addr_t {
             sockaddr,
