@@ -8,7 +8,6 @@
 //! See <https://nginx.org/en/docs/http/ngx_http_core_module.html#resolver>.
 
 use alloc::string::{String, ToString};
-use core::ffi::c_void;
 use core::fmt;
 use core::num::NonZero;
 use core::pin::Pin;
@@ -16,7 +15,6 @@ use core::ptr::NonNull;
 use core::task::{Context, Poll, Waker};
 
 use crate::{
-    allocator::Box,
     collections::Vec,
     core::Pool,
     ffi::{
@@ -101,7 +99,7 @@ impl From<NonZero<isize>> for ResolverError {
     }
 }
 
-type Res = Result<Vec<ngx_addr_t>, Error>;
+type Res = Result<Vec<ngx_addr_t, Pool>, Error>;
 
 /// A wrapper for an ngx_resolver_t which provides an async Rust API
 pub struct Resolver {
@@ -117,12 +115,22 @@ impl Resolver {
     }
 
     /// Resolve a name into a set of addresses.
-    ///
-    /// The set of addresses may not be deterministic, because the
-    /// implementation of the resolver may race multiple DNS requests.
-    pub async fn resolve(&self, name: &ngx_str_t, pool: &Pool) -> Res {
-        let mut resolver = Resolution::new(name, pool, self.resolver, self.timeout)?;
-        resolver.as_mut().await
+    pub async fn resolve_name(&self, name: &ngx_str_t, pool: &Pool) -> Res {
+        let mut ctx = ResolverCtx::new(self.resolver)?;
+        ctx.name = *name;
+        ctx.timeout = self.timeout;
+
+        Resolution::new(ctx, pool).await
+    }
+
+    /// Resolve a service into a set of addresses.
+    pub async fn resolve_service(&self, name: &ngx_str_t, service: &ngx_str_t, pool: &Pool) -> Res {
+        let mut ctx = ResolverCtx::new(self.resolver)?;
+        ctx.name = *name;
+        ctx.service = *service;
+        ctx.timeout = self.timeout;
+
+        Resolution::new(ctx, pool).await
     }
 }
 
@@ -136,68 +144,22 @@ struct Resolution<'a> {
     // Pool used for allocating `Vec<ngx_addr_t>` contents in `Res`. Read by
     // the callback handler.
     pool: &'a Pool,
-    // Pointer to the ngx_resolver_ctx_t. Resolution constructs this with
-    // ngx_resolver_name_start in the constructor, and is responsible for
-    // freeing it, with ngx_resolver_name_done, once it is no longer needed -
-    // this happens in either the callback handler, or the drop impl. Calling
-    // ngx_resolver_name_done before the callback fires ensure nginx does not
-    // ever call the callback.
-    ctx: Option<NonNull<ngx_resolver_ctx_t>>,
+    // Pointer to the ngx_resolver_ctx_t.
+    ctx: Option<ResolverCtx>,
 }
 
 impl<'a> Resolution<'a> {
-    fn new(
-        name: &ngx_str_t,
-        pool: &'a Pool,
-        resolver: NonNull<ngx_resolver_t>,
-        timeout: ngx_msec_t,
-    ) -> Result<Pin<Box<Self>>, Error> {
-        let mut ctx = unsafe {
-            // Start a new resolver context. This implementation currently
-            // passes a null for the second argument `temp`. A non-null `temp`
-            // provides a fast, non-callback-based path for immediately
-            // returning an addr iff `temp` contains a name which is textual
-            // form of an addr.
-            let ctx = ngx_resolve_start(resolver.as_ptr(), core::ptr::null_mut());
-            NonNull::new(ctx).ok_or(Error::AllocationFailed)?
-        };
+    pub fn new(mut ctx: ResolverCtx, pool: &'a Pool) -> Self {
+        ctx.handler = Some(Self::handler);
 
-        // Create a pinned Resolution on the heap, so that we can make
-        // a stable pointer to the Resolution struct.
-        let mut this = Pin::new(Box::new(Resolution {
+        ctx.set_cancelable(1);
+
+        Self {
             complete: None,
             waker: None,
             pool,
             ctx: Some(ctx),
-        }));
-
-        {
-            // Set up the ctx with everything the resolver needs to resolve a
-            // name, and the handler callback which is called on completion.
-            let ctx: &mut ngx_resolver_ctx_t = unsafe { ctx.as_mut() };
-            ctx.name = *name;
-            ctx.timeout = timeout;
-            ctx.set_cancelable(1);
-            ctx.handler = Some(Self::handler);
-            // Safety: Self::handler, Future::poll, and Drop::drop will have
-            // access to &mut Resolution. Nginx is single-threaded and we are
-            // assured only one of those is on the stack at a time, except if
-            // Self::handler wakes a task which polls or drops the Future,
-            // which it only does after use of &mut Resolution is complete.
-            let ptr: &mut Resolution = unsafe { Pin::into_inner_unchecked(this.as_mut()) };
-            ctx.data = ptr as *mut Resolution as *mut c_void;
         }
-
-        // Start name resolution using the ctx. If the name is in the dns
-        // cache, the handler may get called from this stack. Otherwise, it
-        // will be called later by nginx when it gets a dns response or a
-        // timeout.
-        let ret = unsafe { ngx_resolve_name(ctx.as_ptr()) };
-        if let Some(e) = NonZero::new(ret) {
-            return Err(Error::Resolver(ResolverError::from(e), name.to_string()));
-        }
-
-        Ok(this)
     }
 
     // Nginx will call this handler when name resolution completes. If the
@@ -206,10 +168,10 @@ impl<'a> Resolution<'a> {
     unsafe extern "C" fn handler(ctx: *mut ngx_resolver_ctx_t) {
         let mut data = unsafe { NonNull::new_unchecked((*ctx).data as *mut Resolution) };
         let this: &mut Resolution = unsafe { data.as_mut() };
-        this.complete = Some(Self::resolve_result(ctx, this.pool));
 
-        let mut ctx = this.ctx.take().expect("ctx must be present");
-        unsafe { nginx_sys::ngx_resolve_name_done(ctx.as_mut()) };
+        if let Some(ctx) = this.ctx.take() {
+            this.complete = Some(ctx.into_result(this.pool));
+        }
 
         // Wake last, after all use of &mut Resolution, because wake may
         // poll Resolution future on current stack.
@@ -217,63 +179,27 @@ impl<'a> Resolution<'a> {
             waker.wake();
         }
     }
-
-    /// Take the results in a ctx and make an owned copy as a
-    /// Result<Vec<ngx_addr_t>, Error>, where the internals of the ngx_addr_t
-    /// are allocated on the given Pool
-    fn resolve_result(ctx: *mut ngx_resolver_ctx_t, pool: &Pool) -> Res {
-        let ctx = unsafe { ctx.as_ref().unwrap() };
-        if let Some(e) = NonZero::new(ctx.state) {
-            return Err(Error::Resolver(
-                ResolverError::from(e),
-                ctx.name.to_string(),
-            ));
-        }
-        if ctx.addrs.is_null() {
-            Err(Error::AllocationFailed)?;
-        }
-
-        if ctx.naddrs > 0 {
-            unsafe { core::slice::from_raw_parts(ctx.addrs, ctx.naddrs) }
-                .iter()
-                .map(|addr| Self::copy_resolved_addr(addr, pool))
-                .collect::<Result<Vec<_>, _>>()
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    /// Take the contents of an ngx_resolver_addr_t and make an owned copy as
-    /// an ngx_addr_t, using the Pool for allocation of the internals.
-    fn copy_resolved_addr(
-        addr: &nginx_sys::ngx_resolver_addr_t,
-        pool: &Pool,
-    ) -> Result<ngx_addr_t, Error> {
-        let sockaddr = pool.alloc(addr.socklen as usize) as *mut nginx_sys::sockaddr;
-        if sockaddr.is_null() {
-            Err(Error::AllocationFailed)?;
-        }
-        unsafe {
-            addr.sockaddr
-                .cast::<u8>()
-                .copy_to_nonoverlapping(sockaddr.cast(), addr.socklen as usize)
-        };
-
-        let name = unsafe { ngx_str_t::from_bytes(pool.as_ptr(), addr.name.as_bytes()) }
-            .ok_or(Error::AllocationFailed)?;
-
-        Ok(ngx_addr_t {
-            sockaddr,
-            socklen: addr.socklen,
-            name,
-        })
-    }
 }
 
 impl<'a> core::future::Future for Resolution<'a> {
-    type Output = Result<Vec<ngx_addr_t>, Error>;
+    type Output = Result<Vec<ngx_addr_t, Pool>, Error>;
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut();
+
+        if this.waker.is_none() && this.complete.is_none() {
+            let addr = core::ptr::from_mut(unsafe { Pin::into_inner_unchecked(this.as_mut()) });
+
+            if let Some(ctx) = &mut this.ctx {
+                // Start name resolution using the ctx. If the name is in the dns
+                // cache, the handler may get called from this stack. Otherwise, it
+                // will be called later by nginx when it gets a dns response or a
+                // timeout.
+                ctx.data = addr.cast();
+                ctx.resolve()?;
+            }
+        }
+
         // The handler populates this.complete, and we consume it here:
         match this.complete.take() {
             Some(res) => Poll::Ready(res),
@@ -292,15 +218,106 @@ impl<'a> core::future::Future for Resolution<'a> {
     }
 }
 
-impl<'a> Drop for Resolution<'a> {
+struct ResolverCtx(NonNull<ngx_resolver_ctx_t>);
+
+impl core::ops::Deref for ResolverCtx {
+    type Target = ngx_resolver_ctx_t;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: this wrapper is always constructed with a valid non-empty resolve context
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl core::ops::DerefMut for ResolverCtx {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this wrapper is always constructed with a valid non-empty resolve context
+        unsafe { self.0.as_mut() }
+    }
+}
+
+impl Drop for ResolverCtx {
     fn drop(&mut self) {
-        // ctx is taken and freed if the Resolution reaches the handler
-        // callback, but if dropped before that callback, this will cancel any
-        // ongoing work as well as free the ctx memory.
-        if let Some(mut ctx) = self.ctx.take() {
-            unsafe {
-                nginx_sys::ngx_resolve_name_done(ctx.as_mut());
-            }
+        unsafe {
+            nginx_sys::ngx_resolve_name_done(self.0.as_mut());
         }
     }
+}
+
+impl ResolverCtx {
+    /// Creates a new resolver context.
+    ///
+    /// This implementation currently passes a null for the second argument `temp`. A non-null
+    /// `temp` provides a fast, non-callback-based path for immediately returning an addr if
+    /// `temp` contains a name which is textual form of an addr.
+    pub fn new(resolver: NonNull<ngx_resolver_t>) -> Result<Self, Error> {
+        let ctx = unsafe { ngx_resolve_start(resolver.as_ptr(), core::ptr::null_mut()) };
+        NonNull::new(ctx).map(Self).ok_or(Error::AllocationFailed)
+    }
+
+    /// Starts name resolution.
+    pub fn resolve(&mut self) -> Result<(), Error> {
+        let ret = unsafe { ngx_resolve_name(self.0.as_ptr()) };
+
+        if let Some(e) = NonZero::new(ret) {
+            let name = self.name.to_string();
+            Err(Error::Resolver(ResolverError::from(e), name))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Take the results in a ctx and make an owned copy as a
+    /// Result<Vec<ngx_addr_t>, Error>, where the internals of the ngx_addr_t
+    /// are allocated on the given Pool
+    pub fn into_result(self, pool: &Pool) -> Result<Vec<ngx_addr_t, Pool>, Error> {
+        if let Some(e) = NonZero::new(self.state) {
+            return Err(Error::Resolver(
+                ResolverError::from(e),
+                self.name.to_string(),
+            ));
+        }
+        if self.addrs.is_null() {
+            Err(Error::AllocationFailed)?;
+        }
+
+        let mut out = Vec::new_in(pool.clone());
+
+        if self.naddrs > 0 {
+            out.try_reserve_exact(self.naddrs)
+                .map_err(|_| Error::AllocationFailed)?;
+
+            for addr in unsafe { core::slice::from_raw_parts(self.addrs, self.naddrs) } {
+                out.push(copy_resolved_addr(addr, pool)?);
+            }
+        }
+
+        Ok(out)
+    }
+}
+
+/// Take the contents of an ngx_resolver_addr_t and make an owned copy as
+/// an ngx_addr_t, using the Pool for allocation of the internals.
+fn copy_resolved_addr(
+    addr: &nginx_sys::ngx_resolver_addr_t,
+    pool: &Pool,
+) -> Result<ngx_addr_t, Error> {
+    let sockaddr = pool.alloc(addr.socklen as usize) as *mut nginx_sys::sockaddr;
+    if sockaddr.is_null() {
+        Err(Error::AllocationFailed)?;
+    }
+    unsafe {
+        addr.sockaddr
+            .cast::<u8>()
+            .copy_to_nonoverlapping(sockaddr.cast(), addr.socklen as usize)
+    };
+
+    let name = unsafe { ngx_str_t::from_bytes(pool.as_ptr(), addr.name.as_bytes()) }
+        .ok_or(Error::AllocationFailed)?;
+
+    Ok(ngx_addr_t {
+        sockaddr,
+        socklen: addr.socklen,
+        name,
+    })
 }
