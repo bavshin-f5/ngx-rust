@@ -144,7 +144,7 @@ struct Resolution<'a> {
     // Pool used for allocating `Vec<ngx_addr_t>` contents in `Res`. Read by
     // the callback handler.
     pool: &'a Pool,
-    // Pointer to the ngx_resolver_ctx_t.
+    // Owned pointer to the ngx_resolver_ctx_t.
     ctx: Option<ResolverCtx>,
 }
 
@@ -184,20 +184,33 @@ impl<'a> Resolution<'a> {
 impl<'a> core::future::Future for Resolution<'a> {
     type Output = Result<Vec<ngx_addr_t, Pool>, Error>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut();
-
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Resolution is Unpin, so we can use it as just a &mut Resolution
+        let this: &mut Resolution = self.get_mut();
+        // First time a Resolution is polled, start resolution.
         if this.waker.is_none() && this.complete.is_none() {
-            let addr = core::ptr::from_mut(unsafe { Pin::into_inner_unchecked(this.as_mut()) });
+            // Because Resolution is pinned, the *mut pointer from &mut
+            // Resolution can be safely used to reconstruct a &mut Resolution
+            // in the handler anytime until the Future is Ready (which is
+            // always preceeded by use of this addr in the handler) or
+            // Resolution is dropped, which will drop the ResolverCtx as well,
+            // cancelling any resolution for which the handler has not yet
+            // been called.
+            let addr = core::ptr::from_mut(this);
 
-            if let Some(ctx) = &mut this.ctx {
-                // Start name resolution using the ctx. If the name is in the dns
-                // cache, the handler may get called from this stack. Otherwise, it
-                // will be called later by nginx when it gets a dns response or a
-                // timeout.
-                ctx.data = addr.cast();
-                ctx.resolve()?;
-            }
+            // Start name resolution using the ctx. If the name is in the dns
+            // cache, the handler may get called from this stack. Otherwise, it
+            // will be called later by nginx when it gets a dns response or a
+            // timeout.
+            let ctx = this
+                .ctx
+                .as_mut()
+                .expect("ctx is Some between Resolution construction and handler");
+            ctx.data = addr.cast();
+            // Does calling the handler inside this call cause UB? We haven't
+            // told rustc that know we have passed &mut Self to the handler by
+            // way of the ctx.
+            ctx.resolve()?;
         }
 
         // The handler populates this.complete, and we consume it here:
@@ -206,9 +219,9 @@ impl<'a> core::future::Future for Resolution<'a> {
             None => {
                 // If the handler has not yet fired, populate the waker field,
                 // which the handler will consume:
-                match &mut self.waker {
+                match &mut this.waker {
                     None => {
-                        self.waker = Some(cx.waker().clone());
+                        this.waker = Some(cx.waker().clone());
                     }
                     Some(w) => w.clone_from(cx.waker()),
                 }
@@ -218,6 +231,7 @@ impl<'a> core::future::Future for Resolution<'a> {
     }
 }
 
+/// An owned ngx_resolver_ctx_t.
 struct ResolverCtx(NonNull<ngx_resolver_ctx_t>);
 
 impl core::ops::Deref for ResolverCtx {
@@ -268,8 +282,8 @@ impl ResolverCtx {
     }
 
     /// Take the results in a ctx and make an owned copy as a
-    /// Result<Vec<ngx_addr_t>, Error>, where the internals of the ngx_addr_t
-    /// are allocated on the given Pool
+    /// Result<Vec<ngx_addr_t, Pool>, Error>, where the Vec and the internals
+    /// of the ngx_addr_t are allocated on the given Pool
     pub fn into_result(self, pool: &Pool) -> Result<Vec<ngx_addr_t, Pool>, Error> {
         if let Some(e) = NonZero::new(self.state) {
             return Err(Error::Resolver(
