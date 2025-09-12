@@ -8,6 +8,7 @@
 //! See <https://nginx.org/en/docs/http/ngx_http_core_module.html#resolver>.
 
 use alloc::string::{String, ToString};
+use core::ffi::c_void;
 use core::fmt;
 use core::num::NonZero;
 use core::pin::Pin;
@@ -15,6 +16,7 @@ use core::ptr::NonNull;
 use core::task::{Context, Poll, Waker};
 
 use crate::{
+    allocator::Box,
     collections::Vec,
     core::Pool,
     ffi::{
@@ -116,21 +118,14 @@ impl Resolver {
 
     /// Resolve a name into a set of addresses.
     pub async fn resolve_name(&self, name: &ngx_str_t, pool: &Pool) -> Res {
-        let mut ctx = ResolverCtx::new(self.resolver)?;
-        ctx.name = *name;
-        ctx.timeout = self.timeout;
-
-        Resolution::new(ctx, pool).await
+        let mut resolver = Resolution::new(name, &ngx_str_t::empty(), self, pool)?;
+        resolver.as_mut().await
     }
 
     /// Resolve a service into a set of addresses.
     pub async fn resolve_service(&self, name: &ngx_str_t, service: &ngx_str_t, pool: &Pool) -> Res {
-        let mut ctx = ResolverCtx::new(self.resolver)?;
-        ctx.name = *name;
-        ctx.service = *service;
-        ctx.timeout = self.timeout;
-
-        Resolution::new(ctx, pool).await
+        let mut resolver = Resolution::new(name, service, self, pool)?;
+        resolver.as_mut().await
     }
 }
 
@@ -149,17 +144,58 @@ struct Resolution<'a> {
 }
 
 impl<'a> Resolution<'a> {
-    pub fn new(mut ctx: ResolverCtx, pool: &'a Pool) -> Self {
+    pub fn new(
+        name: &ngx_str_t,
+        service: &ngx_str_t,
+        resolver: &Resolver,
+        pool: &'a Pool,
+    ) -> Result<Pin<Box<Self, Pool>>, Error> {
+        // Create a pinned Resolution on the Pool, so that we can make
+        // a stable pointer to the Resolution struct.
+        let mut this = Box::pin_in(
+            Resolution {
+                complete: None,
+                waker: None,
+                pool,
+                ctx: None,
+            },
+            pool.clone(),
+        );
+
+        // Set up the ctx with everything the resolver needs to resolve a
+        // name, and the handler callback which is called on completion.
+        let mut ctx = ResolverCtx::new(resolver.resolver)?;
+        ctx.name = *name;
+        ctx.service = *service;
+        ctx.timeout = resolver.timeout;
+        ctx.set_cancelable(1);
         ctx.handler = Some(Self::handler);
 
-        ctx.set_cancelable(1);
-
-        Self {
-            complete: None,
-            waker: None,
-            pool,
-            ctx: Some(ctx),
+        {
+            // Safety: Self::handler, Future::poll, and Drop::drop will have
+            // access to &mut Resolution. Nginx is single-threaded and we are
+            // assured only one of those is on the stack at a time, except if
+            // Self::handler wakes a task which polls or drops the Future,
+            // which it only does after use of &mut Resolution is complete.
+            let ptr: &mut Resolution = unsafe { Pin::into_inner_unchecked(this.as_mut()) };
+            ctx.data = ptr as *mut Resolution as *mut c_void;
         }
+
+        // Neither ownership nor borrows are tracked for this pointer,
+        // and ctxp will not be used after the ctx destruction.
+        let ctxp = ctx.0;
+        this.ctx = Some(ctx);
+
+        // Start name resolution using the ctx. If the name is in the dns
+        // cache, the handler may get called from this stack. Otherwise, it
+        // will be called later by nginx when it gets a dns response or a
+        // timeout.
+        let ret = unsafe { ngx_resolve_name(ctxp.as_ptr()) };
+        if let Some(e) = NonZero::new(ret) {
+            return Err(Error::Resolver(ResolverError::from(e), name.to_string()));
+        }
+
+        Ok(this)
     }
 
     // Nginx will call this handler when name resolution completes. If the
@@ -187,31 +223,6 @@ impl<'a> core::future::Future for Resolution<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Resolution is Unpin, so we can use it as just a &mut Resolution
         let this: &mut Resolution = self.get_mut();
-        // First time a Resolution is polled, start resolution.
-        if this.waker.is_none() && this.complete.is_none() {
-            // Because Resolution is pinned, the *mut pointer from &mut
-            // Resolution can be safely used to reconstruct a &mut Resolution
-            // in the handler anytime until the Future is Ready (which is
-            // always preceeded by use of this addr in the handler) or
-            // Resolution is dropped, which will drop the ResolverCtx as well,
-            // cancelling any resolution for which the handler has not yet
-            // been called.
-            let addr = core::ptr::from_mut(this);
-
-            // Start name resolution using the ctx. If the name is in the dns
-            // cache, the handler may get called from this stack. Otherwise, it
-            // will be called later by nginx when it gets a dns response or a
-            // timeout.
-            let ctx = this
-                .ctx
-                .as_mut()
-                .expect("ctx is Some between Resolution construction and handler");
-            ctx.data = addr.cast();
-            // Does calling the handler inside this call cause UB? We haven't
-            // told rustc that know we have passed &mut Self to the handler by
-            // way of the ctx.
-            ctx.resolve()?;
-        }
 
         // The handler populates this.complete, and we consume it here:
         match this.complete.take() {
@@ -267,18 +278,6 @@ impl ResolverCtx {
     pub fn new(resolver: NonNull<ngx_resolver_t>) -> Result<Self, Error> {
         let ctx = unsafe { ngx_resolve_start(resolver.as_ptr(), core::ptr::null_mut()) };
         NonNull::new(ctx).map(Self).ok_or(Error::AllocationFailed)
-    }
-
-    /// Starts name resolution.
-    pub fn resolve(&mut self) -> Result<(), Error> {
-        let ret = unsafe { ngx_resolve_name(self.0.as_ptr()) };
-
-        if let Some(e) = NonZero::new(ret) {
-            let name = self.name.to_string();
-            Err(Error::Resolver(ResolverError::from(e), name))
-        } else {
-            Ok(())
-        }
     }
 
     /// Take the results in a ctx and make an owned copy as a
