@@ -2,6 +2,7 @@
 members = [
     "nginx-src",
     "nginx-sys",
+    "nginx-unittest",
     "examples",
 ]
 # cargo is not smart enough to emit resolver = "2" when publishing
@@ -54,7 +55,7 @@ targets = []
 allocator-api2 = { version = "0.4.0", default-features = false, features = ["fresh-rust"] }
 async-task = { version = "4.7.1", optional = true }
 lock_api = "0.4.13"
-nginx-sys = { path = "nginx-sys", version = "0.5.0"}
+nginx-sys = { path = "nginx-sys", version = "0.5.0" }
 pin-project-lite = { version = "0.2.16", optional = true }
 
 [features]
@@ -87,3 +88,7 @@ tempfile = { version = "3.20.0", default-features = false }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+nginx-sys = { path = "nginx-sys", version = "0.5.0", features = ["unittest"] }
+nginx-unittest = { path = "nginx-unittest", version = "0.1.0" }

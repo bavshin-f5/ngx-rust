@@ -42,6 +42,7 @@ mail = []
 stream = []
 # Enables downloading and building a copy of NGINX in the build script.
 vendored = ["dep:nginx-src"]
+unittest = ["vendored"]
 
 [lints]
 workspace = true
