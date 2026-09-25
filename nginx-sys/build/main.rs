@@ -250,13 +250,12 @@ fn generate_binding(nginx: &NginxSource) {
         .allowlist_var("(NGX|NGINX|ngx|nginx)_.*")
         // ...and a couple of symbols we need in nginx-sys.
         .allowlist_function(macro_dependencies.join("|"))
-        // will be restored later in build.rs
-        .blocklist_item("NGX_ALIGNMENT")
         .parse_callbacks(callbacks)
         .generate_cstr(true)
         // The input header we would like to generate bindings for.
         .header("build/wrapper.h")
         .clang_args(clang_args)
+        .clang_macro_fallback()
         .layout_tests(false)
         .rust_target(rust_target)
         .rust_edition(bindgen::RustEdition::Edition2024)
