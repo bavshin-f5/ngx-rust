@@ -265,7 +265,7 @@ unsafe extern "C" fn ngx_http_upstream_commands_set_custom(
 
     if let Some(value) = args.get(1) {
         let n = unsafe { ngx_atoi(value.data, value.len) };
-        if n == (NGX_ERROR as isize) || n == 0 {
+        if n == NGX_ERROR || n == 0 {
             ngx_conf_log_error!(
                 NGX_LOG_EMERG,
                 cf,
